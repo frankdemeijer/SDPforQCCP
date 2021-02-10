@@ -1,0 +1,10 @@
+INFORMATION on how to read the QCCP instances (F. de Meijer, February 2021): 
+
+Each txt-file corresponds to an QCCP instance and contains all data that is needed to create the instance. Each file consists of the following four parts: 
+1) The 1st line is an integer number and corresponds to n: the number of nodes in graph G. 
+2) The 2nd line is an integer number and corresponds to m: the number of arcs in graph G (all graphs are simple and directed).
+3) The 3th-(2+n)th line corresponds to the directed n-by-n Adjacency matrix of the graph. That is, the entry on position (i,j) equals 1 if there is an arc from node i to j and a 0 otherwise. 
+   The entries on the diagonal are set to Inf. 
+4) The (3+n)th-(2+n+m)th line corresponds to the m-by-m cost matrix Q. The rows and columns are indexed by the arcs in G ordered row-wise w.r.t. the Adjacency matrix. For example, if G is the
+   complete graph on n vertices, the arcs are ordered (1,2), (1,3), ..., (1,n), (2,1), (2,3), ..., (2,n), etc. The matrix Q contains on position (e,f) the costs q_{ef} if f succeeds e in G, and 0 otherwise.
+   
