@@ -1,0 +1,208 @@
+function [W,L] = TransformationMatrix(Incidence)
+%F. de Meijer and R. Sotirov - 31 July 2020
+%Code belonging to Algorithm 1 of the paper 'SDP-based bounds for the
+%quadratic cycle cover problem via cutting plane augmented Lagrangian
+%methods and reinforcement learning'
+
+%This code computes a sparse expression for the transformation matrix
+%needed in the facial reduction of our SDP relaxations for the QCCP. It
+%exploits the bipartite representation to do so and is valid for any
+%directed (simple) graph, provided that the instance is feasible for the QCCP.
+
+% |-------------+-----------------------------------------------------------|
+% | Input       | Description                                               |
+% |-------------+-----------------------------------------------------------|
+% | Incidence   | m-by-n incidence matrix of a directed graph, where each   |
+% |             | column represents an arc from the node with entry -1      |
+% |             | to the node with entry 1.                                 |
+% |-------------+-----------------------------------------------------------|
+% |-------------+-----------------------------------------------------------|
+% | Output      | Description                                               |
+% |-------------+-----------------------------------------------------------|
+% | W           | sparse expression of the transformation matrix needed in  |
+% |             | the facial reduction for SDP1, SDP2 and SDP3              |
+% |-------------+-----------------------------------------------------------|
+
+n = size(Incidence,1); 
+m = size(Incidence,2); 
+
+U = double(Incidence < 0); 
+V = double(Incidence > 0);
+
+%% Pre-processing step:
+%We first need to make sure that Assumption 1 is satisfied. In other words,
+%we need to remove all arcs that are never used in a cycle cover. We do this
+%by solving m linear CCPs to check whether there exist a cycle cover containing
+%each arc. If such a cycle cover does not exist, we set the corresponding entry
+%in jVector equal to 1, otherwise it is set to 0. 
+jVector = zeros(m,1); 
+for i = 1:m
+    f = zeros(m,1); f(i) = 1; 
+    [~, val] = linprog(-f, [], [], [U; V], ones(2*n,1), zeros(m,1)); 
+    if val == 0
+        jVector(i) = 1;
+    end
+end
+
+%We now remove the arcs corresponding to a 1 in jVector: 
+jVector = jVector > 0; 
+Incidence(:,jVector) = [];
+m = m - sum(jVector); 
+
+%% Computation of the sparse transformation matrix:
+
+%Initialize W:
+W = [];
+
+%The bipartite representation of the graph is called H. Its incidence
+%matrix is as follows: 
+IncidenceH = [U; V];
+
+%Creating H and its corresponding adjacency matrix:
+Adjacency = IncidenceH*IncidenceH';
+Adjacency = Adjacency - diag(diag(Adjacency));
+H = graph(Adjacency);
+
+%Finding connected components in bipartite graph H, using built-in Matlab
+%function conncomp:
+components = conncomp(H);
+numComponents = max(components);
+
+%We treat each connected component separately:
+for i = 1:numComponents
+    %Find vertices and edges in current component. We do this by
+    %considering the subgraph of the incidence matrix of H implied by the
+    %current component:
+    vertices = find(components == i);
+    subIncidence = IncidenceH(vertices,:);
+    edges = find(sum(subIncidence,1)>0);
+    
+    if length(edges) == length(vertices) - 1
+        %Component is a spanning tree, no columns of W can be found here.
+    else
+        %We want to find a spanning tree in the connected component. We do 
+        %this using the built-in function minspantree, that finds a MST
+        %w.r.t. weight function 1:
+        M = minspantree(graph(Adjacency(vertices,vertices)));
+        mstEdges = table2array(M.Edges);
+        
+        %T is the array that contains the edges in the spanning tree. We
+        %consruct T iteratively:
+        T = [];
+        for j = 1:size(mstEdges,1)
+            currentEdge = find(subIncidence(mstEdges(j,1),:) == 1 & subIncidence(mstEdges(j,2),:) == 1);
+            T = [T, currentEdge];
+        end
+        
+        %notUsedEdges contains remaining edges in current component that are
+        %not in T
+        notUsed = ~ismember(edges, T);
+        notUsedEdges = edges(notUsed);
+        
+        %For every edge in the current component that is not in T, we now 
+        %construct a vector w^e. These vectors are linearly independent and
+        %form a basis for the flow space of H. We construct these iteratively 
+        %using the following for-loop:
+        
+        for j = 1:length(notUsedEdges)
+            %Initialize w:
+            w = zeros(m,1);
+            thisEdge = notUsedEdges(j);
+            
+            %Add the current edge to T to get T_new. By construction, T_new
+            %contains exactly 1 cycle:
+            T_new = [T, thisEdge];
+            
+            %smallIncidence equals the incidence matrix of the subgraph
+            %implied by the edges in T_new: 
+            smallIncidence = IncidenceH(vertices,T_new); 
+            
+            %To detect the cycle, we perform a breadth-first search,
+            %starting at one of the vertices incident to the added edge:
+            firstVertices = find(smallIncidence(:,end)); 
+            firstVertex = firstVertices(1); 
+            currentVertex = firstVertices(2); 
+            
+            %Initialize the list of visited vertices:
+            listVisited = [];
+            listToBeVisited = currentVertex; 
+            
+            %The vector predecessors saves the last edge (in first column) 
+            %and last vertex (in second column) that led to each vertex in 
+            %BFS algorithm:
+            predecessors = zeros(length(vertices),2); 
+            predecessors(currentVertex,1) = length(T_new); %Since we put thisEdge on last position of T_new 
+            predecessors(currentVertex,2) = firstVertex; 
+            
+            %Since the current subgraph has a cycle, each vertex in the
+            %cycle can be reached by two distinct paths. In order to
+            %properly detect the vertices in the cycle, we artificially 
+            %'remove' the last added edge from the current subgraph:
+            smallIncidence(:,end) = zeros(length(vertices),1);
+            
+            %Start the BFS:
+            while ~ismember(firstVertex,listToBeVisited) %We stop when the initial vertex is discovered.
+                %currentVertex is the new vertex that is visited. offSpring
+                %contains the edges that are incident to currentVertex:
+                currentVertex = listToBeVisited(1); 
+                offSpring = find(smallIncidence(currentVertex,:)); 
+                
+                %Consider all neighbours of currentVertex not yet visited:
+                for k = 1:length(offSpring)
+                    thisEdge = offSpring(k);
+                    thisVertex = find(smallIncidence(:,thisEdge)==1); 
+                    thisVertex = thisVertex(thisVertex ~= currentVertex); 
+                    
+                    %Save the predecessor edge and predecessor vertex that
+                    %led to the discovery of thisVertex:
+                    predecessors(thisVertex,1) = thisEdge; 
+                    predecessors(thisVertex,2) = currentVertex; 
+                    
+                    %Put the new vertex on the list of vertices that needs to be
+                    %visited and artificially 'remove' the edge from the
+                    %subgraph:
+                    listToBeVisited = [listToBeVisited, thisVertex]; 
+                    smallIncidence(:,thisEdge) = zeros(length(vertices),1); 
+                end
+                
+                %Remove currentVertex from list and put it on list of
+                %visited vertices.
+                listToBeVisited(1) = []; 
+                listVisited = [listVisited, currentVertex]; 
+                
+            end
+            
+            %With backward recursion, we want to find the edges in the
+            %cycle containing edge T_new(end). 
+            thisEdge = 0;
+            thisVertex = firstVertex; 
+            count = 1; 
+            while thisEdge ~= length(T_new)
+                %Find last edge before current vertex:
+                thisEdge = predecessors(thisVertex,1); 
+                
+                %Put 1 or -1 in vector w. NOTE: We do this on position
+                %T_new(thisEdge), not on position thisEdge, since above we
+                %worked with a subset of edges. Therefore, we changed
+                %indexing.
+                w(T_new(thisEdge)) = (-1)^count; 
+                
+                %Find last vertex before current vertex:
+                thisVertex = predecessors(thisVertex,2); 
+                count = count + 1; 
+            end
+            
+            %Add a vector to W:
+            W = [W, [0; w]];    
+        end
+    end
+end
+
+%Finally, the first column of W is determined by a feasible cycle cover of
+%the graph. This can be determined by solving a linear CCP with a constant arc-weight: 
+f = ones(m,1); 
+x = linprog(f, [], [], [U; V], ones(2*n,1), zeros(m,1));
+W = [[1; x],W];
+
+
+end
